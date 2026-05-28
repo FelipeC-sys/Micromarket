@@ -22,11 +22,14 @@ public class VentaService {
 
     private final VentaRepository ventaRepository;
     private final EmpleadoService empleadoService;
+    private final ProductoRepository productoRepository;
 
     public VentaService(VentaRepository ventaRepository,
-                        EmpleadoService empleadoService) {
+                        EmpleadoService empleadoService,
+                        ProductoRepository productoRepository) {
         this.ventaRepository = ventaRepository;
         this.empleadoService = empleadoService;
+        this.productoRepository = productoRepository;
     }
 
     @Transactional
@@ -40,19 +43,45 @@ public class VentaService {
         BigDecimal subtotal = BigDecimal.ZERO;
 
         for (DetalleVentaRequestDTO detalleDTO : dto.getDetalles()) {
+            Producto producto = productoRepository.findById(detalleDTO.getProductoId())
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "Producto no encontrado con ID: " + detalleDTO.getProductoId()));
+
+            if (!producto.isActivo()) {
+                throw new ResourceNotFoundException(
+                        "El producto '" + producto.getNombre() + "' no está disponible.");
+            }
+
+            if (producto.getStock() < detalleDTO.getCantidad()) {
+                throw new StockInsuficienteException(
+                        "Stock insuficiente para '" + producto.getNombre()
+                        + "'. Disponible: " + producto.getStock()
+                        + ", solicitado: " + detalleDTO.getCantidad());
+            }
+
+            producto.setStock(producto.getStock() - detalleDTO.getCantidad());
+            productoRepository.save(producto);
+
             DetalleVenta detalle = new DetalleVenta();
             detalle.setVenta(venta);
-            detalle.setProductoId(detalleDTO.getProductoId());
+            detalle.setProductoId(producto.getId());
             detalle.setCantidad(detalleDTO.getCantidad());
-            detalle.setPrecioUnitario(BigDecimal.ZERO);
-            detalle.setSubtotal(BigDecimal.ZERO);
+            detalle.setPrecioUnitario(producto.getPrecio());
+            BigDecimal subtotalDetalle = producto.getPrecio()
+                    .multiply(BigDecimal.valueOf(detalleDTO.getCantidad()));
+            detalle.setSubtotal(subtotalDetalle);
+
             detalles.add(detalle);
+            subtotal = subtotal.add(subtotalDetalle);
         }
+
+        BigDecimal iva = subtotal.multiply(IVA_PORCENTAJE).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = subtotal.add(iva).setScale(2, RoundingMode.HALF_UP);
 
         venta.setDetalles(detalles);
         venta.setSubtotal(subtotal.setScale(2, RoundingMode.HALF_UP));
-        venta.setIva(BigDecimal.ZERO);
-        venta.setTotal(BigDecimal.ZERO);
+        venta.setIva(iva);
+        venta.setTotal(total);
 
         Venta guardada = ventaRepository.save(venta);
         return toDTO(guardada);
